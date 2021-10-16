@@ -5,32 +5,23 @@ import cv2
 import cv_bridge as bridge
 
 # TODO: renomear função
+# sugestões:
+# msg_to_img
+# convert_to_cv2
 def get_frame(msg, encoding="bgr8"):
     image = bridge.imgmsg_to_cv2(msg, desired_encoding=encoding)
 
     return image
 
-def get_external_contours(img, thresh_params, kernel=None, iterations=1):
+def get_external_contours(img, low_hsv, high_hsv, kernel=None, iterations=1):
     if kernel is None:
         kernel = np.ones((5, 5), dtype=np.uint8)
 
-    image_HSV = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    image_threshold = img.copy()
 
-    image_threshold = cv2.inRange(
-        image_HSV,
-        (
-            thresh_params["low_H"],
-            thresh_params["low_S"],
-            thresh_params["low_V"],
-        ),
-        (
-            thresh_params["high_H"],
-            thresh_params["high_S"],
-            thresh_params["high_V"],
-        ),
-    )
+    image_threshold = mask_out_color(image_threshold,low_hsv,high_hsv)
 
-    image_threshold = cv2.dilate(image_threshold, kernel, iterations=iterations)
+    # image_threshold = cv2.dilate(image_threshold, kernel, iterations=iterations)
 
     result = cv2.findContours(image_threshold, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     contours = result[0]
@@ -70,9 +61,41 @@ def get_position_from_centroid(drone_pos, fx, fy, height, width, centroid, hdg, 
     pos = [pos_x, pos_y, H]
     return pos
 
-def mask_out_color(img, lower, upper):
-    LOWER_RANGE = np.array(lower)
-    UPPER_RANGE = np.array(upper)
+def rgb_to_hsv(color):
+ 
+    r, g, b = color[0] / 255.0, color[1] / 255.0, color[2] / 255.0
+ 
+    cmax = max(r, g, b)   
+    cmin = min(r, g, b)    
+    diff = cmax-cmin       
+ 
+    if cmax == cmin:
+        h = 0
+    elif cmax == r:
+        h = (60 * ((g - b) / diff) + 360) % 360
+    elif cmax == g:
+        h = (60 * ((b - r) / diff) + 120) % 360
+    elif cmax == b:
+        h = (60 * ((r - g) / diff) + 240) % 360
+    if cmax == 0:
+        s = 0
+    else:
+        s = (diff / cmax) * 100
+ 
+    v = cmax * 100
+    return [h,s,v]
+
+def mask_out_color(img, lower, upper, input_mode = 'HSV'):
+
+    if input_mode == 'HSV':
+
+        LOWER_RANGE = np.array(lower)
+        UPPER_RANGE = np.array(upper)
+
+    elif input_mode == 'RGB':
+
+        LOWER_RANGE = np.array(rgb_to_hsv(lower))
+        UPPER_RANGE = np.array(rgb_to_hsv(upper))
 
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
@@ -91,34 +114,37 @@ def flood_fill(img):
     return image
 
 def is_land_base(contour, img):
+
         is_land_base = False
-        is_moving_base = False
+
         image = np.copy(img)
 
         h,w = image.shape[:2]
         roi = np.zeros([h, w, 1], dtype=np.uint8)
-        roi.fill(0)
+        # roi.fill(0)
 
         cv2.fillPoly(roi, [contour], color=(255, 255, 255))
-        roiColored = cv2.bitwise_and(image, image, mask=roi)
+        roi_colored = cv2.bitwise_and(image, image, mask=roi)
 
-        yellowMask = mask_out_color(roiColored, [0,40,0], [100,255,255])
+        yellow_mask = mask_out_color(roi_colored, [0,40,0], [100,255,255])
 
-        invertedFloodFilled = flood_fill(yellowMask)
-        roi2 = invertedFloodFilled | yellowMask
-        roi2Colored = cv2.bitwise_and(roiColored,roiColored,mask=roi2)
+        flood_filled = flood_fill(yellow_mask)
+        invert_flood_filled = cv2.bitwise_not(flood_filled)
+        inside_yellow_area_mask = invert_flood_filled | yellow_mask
+        inside_yellow_area = cv2.bitwise_and(roi_colored,roi_colored,mask=inside_yellow_area_mask)
 
-        blueMask = mask_out_color(roi2Colored, [110,1,0], [179,255,255])
+        blue_mask = mask_out_color(inside_yellow_area, [110,1,0], [179,255,255])
 
         conts, _ = cv2.findContours(roi, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-        isRectangle = is_quadrilateral(conts[0])
+        is_rectangle = is_quadrilateral(conts[0])
 
-        if np.mean(blueMask) != 0 and isRectangle:
+        if np.mean(blue_mask) != 0 and is_rectangle:
             is_land_base = True
 
         return is_land_base
 
 def is_fixed_base(contour, img, pad=40):
+
     image = img.copy()
     is_moving_base = False
 
@@ -140,6 +166,7 @@ def is_fixed_base(contour, img, pad=40):
     return is_moving_base
 
 def is_quadrilateral(contour, err=0.15):
+
     peri = cv2.arcLength(contour, True)
     vertices = cv2.approxPolyDP(contour, err * peri, True)
     num_sides = len(vertices)
@@ -150,6 +177,7 @@ def is_quadrilateral(contour, err=0.15):
     return True
 
 def is_panel(img):
+    
     image = np.copy(img)
 
     image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
